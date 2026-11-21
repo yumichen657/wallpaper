@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>動態桌布</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0d0b0a; overflow: hidden;
+    font-family: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+
+  /* 舞台：所有圖層疊在一起 */
+  .stage { position: fixed; inset: 0; overflow: hidden; }
+  .layer { position: absolute; inset: -6%; background-size: cover; background-position: center; will-change: transform; }
+
+  /* ① 背景：鏡頭緩慢推近＋平移（移動幅度小 → 看起來在遠處） */
+  #bg { animation: camBg 18s ease-in-out infinite alternate; }
+  @keyframes camBg { from { transform: scale(1.02) translate(-1%, 0); } to { transform: scale(1.08) translate(1%, -1%); } }
+
+  /* ② 光束：透明度忽明忽暗 */
+  #rays { mix-blend-mode: screen; animation: rays 6s ease-in-out infinite alternate; }
+  @keyframes rays { 0% { opacity: .35; } 40% { opacity: .75; } 60% { opacity: .55; } 100% { opacity: .85; } }
+
+  /* ③ 人物：移動幅度比背景大（視差）＋呼吸 */
+  #chara { inset: auto 0 0 0; height: 92%; background-size: contain; background-repeat: no-repeat; background-position: bottom center;
+    animation: camChara 18s ease-in-out infinite alternate; }
+  #chara .breath { position: absolute; inset: 0; background: inherit; transform-origin: 50% 100%; animation: breath 4.2s ease-in-out infinite; }
+  @keyframes camChara { from { transform: translate(-2.5%, 0) scale(1); } to { transform: translate(2%, -1%) scale(1.03); } }
+  @keyframes breath { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.004, 1.012); } }
+
+  /* ④ 彩虹眩光：用濾色疊上去，慢慢飄 */
+  #flare { inset: auto; left: -10%; top: -8%; width: 70vmax; height: 70vmax; border-radius: 50%; mix-blend-mode: screen; opacity: .35;
+    background: conic-gradient(from 200deg, transparent 0 40%, #ff6b6b 45%, #ffd56b 50%, #6bff9c 55%, #6bc8ff 60%, #b46bff 65%, transparent 70% 100%);
+    -webkit-mask: radial-gradient(circle, transparent 54%, #000 56%, #000 60%, transparent 63%);
+            mask: radial-gradient(circle, transparent 54%, #000 56%, #000 60%, transparent 63%);
+    filter: blur(6px); animation: flare 14s ease-in-out infinite alternate; }
+  @keyframes flare { from { transform: rotate(-8deg) translate(0, 0); opacity: .25; } to { transform: rotate(6deg) translate(3%, 2%); opacity: .45; } }
+
+  /* ⑤ 粒子在 canvas 上畫 */
+  #fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  /* 四周暗角，讓視線集中在中間 */
+  .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(0,0,0,.55) 100%); }
+
+  /* 上傳面板 */
+  .panel { position: fixed; left: 12px; bottom: 12px; z-index: 5; display: flex; flex-direction: column; gap: 6px;
+    background: rgba(20,16,14,.72); color: #f3e9df; padding: 10px 12px; border-radius: 12px; font-size: 13px; max-width: 280px;
+    backdrop-filter: blur(6px); transition: opacity .3s; }
+  .panel.hide { opacity: 0; pointer-events: none; }
+  .panel label { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+  .panel input[type=file] { display: none; }
+  .panel .btn { background: #e8d5c0; color: #2a1d14; border-radius: 999px; padding: 4px 10px; font-weight: 600; white-space: nowrap; }
+  .panel small { color: #c9b8a8; line-height: 1.5; }
+  .toggle { position: fixed; right: 12px; bottom: 12px; z-index: 6; background: rgba(20,16,14,.6); color: #fff; border: 0;
+    border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  @media (prefers-reduced-motion: reduce) { .layer, #chara .breath { animation: none !important; } }
+</style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <div class="layer" id="bg"></div>
+    <div class="layer" id="rays"></div>
+    <div class="layer" id="chara"><div class="breath"></div></div>
+    <div class="layer" id="flare"></div>
+    <canvas id="fx"></canvas>
+    <div class="vignette"></div>
+  </div>
+
+  <div class="panel" id="panel">
+    <label>背景圖 <span class="btn">選擇</span><input type="file" id="fileBg" accept="image/*"></label>
+    <label>人物圖（去背 PNG）<span class="btn">選擇</span><input type="file" id="fileChara" accept="image/*"></label>
+    <small>還沒選圖時，背景是程式畫的示範房間。人物圖要用背景透明的 PNG，才看得到後面的房間。</small>
+  </div>
+  <button class="toggle" id="toggle">隱藏面板</button>
+
+<script>
+// ===== 1. 沒有上傳背景時，用 canvas 畫一個示範房間（窗戶＋木牆）=====
+function drawRoom(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  // 木頭牆
+  let grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#3b2a20'); grad.addColorStop(1, '#1e1510');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 2;
+  for (let x = 0; x < w; x += w / 18) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h * .72); g.stroke(); }
+  // 大窗戶
+  const wx = w * .52, wy = h * .1, ww = w * .36, wh = h * .5;
+  grad = g.createLinearGradient(wx, wy, wx, wy + wh);
+  grad.addColorStop(0, '#f6f1e4'); grad.addColorStop(1, '#bcd3d6');
+  g.fillStyle = grad; g.fillRect(wx, wy, ww, wh);
+  g.fillStyle = '#2a1d15';
+  for (let i = 1; i < 4; i++) g.fillRect(wx + ww * i / 4 - 4, wy, 8, wh);
+  for (let i = 1; i < 3; i++) g.fillRect(wx, wy + wh * i / 3 - 4, ww, 8);
+  g.lineWidth = 14; g.strokeStyle = '#2a1d15'; g.strokeRect(wx, wy, ww, wh);
+  // 桌子和地板
+  g.fillStyle = '#4a3324'; g.fillRect(0, h * .72, w, h * .28);
+  g.fillStyle = '#5c4030'; g.fillRect(w * .05, h * .66, w * .4, h * .035);
+  // 幾盆植物（簡單的綠色圓）
+  g.fillStyle = '#3f5a3a';
+  [[.1, .62], [.18, .6], [.3, .63]].forEach(([x, y]) => { g.beginPath(); g.ellipse(w * x, h * y, w * .03, h * .04, 0, 0, 7); g.fill(); });
+  return c.toDataURL();
+}
+
+// 光束：從窗戶斜斜射進來的幾道光
+function drawRays(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 5; i++) {
+    const x0 = w * (.56 + i * .07), spread = w * (.08 + i * .015);
+    const grad = g.createLinearGradient(x0, h * .1, x0 - w * .35, h * .95);
+    grad.addColorStop(0, 'rgba(255,240,210,.35)'); grad.addColorStop(1, 'rgba(255,240,210,0)');
+    g.fillStyle = grad;
+    g.beginPath(); g.moveTo(x0, h * .1); g.lineTo(x0 + spread * .3, h * .1);
+    g.lineTo(x0 - w * .3 + spread, h); g.lineTo(x0 - w * .4, h); g.closePath(); g.fill();
+  }
+  return c.toDataURL();
+}
+
+const bg = document.getElementById('bg'), rays = document.getElementById('rays'), chara = document.getElementById('chara');
+function paintDefault() {
+  const w = 1200, h = 900;
+  if (!bg.dataset.user) bg.style.backgroundImage = `url(${drawRoom(w, h)})`;
+  rays.style.backgroundImage = `url(${drawRays(w, h)})`;
+}
+paintDefault();
+
+// ===== 2. 上傳自己的圖 =====
+function useFile(input, el) {
+  input.addEventListener('change', () => {
+    const f = input.files[0]; if (!f) return;
+    const url = URL.createObjectURL(f);
+    el.style.backgroundImage = `url(${url})`;
+    el.dataset.user = '1';
+  });
+}
+useFile(document.getElementById('fileBg'), bg);
+useFile(document.getElementById('fileChara'), chara);
+
+document.getElementById('toggle').onclick = e => {
+  const p = document.getElementById('panel');
+  p.classList.toggle('hide');
+  e.target.textContent = p.classList.contains('hide') ? '顯示面板' : '隱藏面板';
+};
+
+// ===== 3. 粒子：飄浮光點、散景、花瓣 =====
+const cv = document.getElementById('fx'), ctx = cv.getContext('2d');
+let W, H, dpr;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.width = innerWidth * dpr; H = cv.height = innerHeight * dpr;
+}
+addEventListener('resize', resize); resize();
+
+const rand = (a, b) => a + Math.random() * (b - a);
+function makeParticle(type, init) {
+  const p = { type, x: rand(0, W), y: init ? rand(0, H) : H + 20, t: rand(0, 6.28) };
+  if (type === 'dust')  Object.assign(p, { r: rand(1, 2.6) * dpr, vy: rand(-.15, -.45) * dpr, vx: rand(-.1, .1) * dpr, a: rand(.4, .9) });
+  if (type === 'bokeh') Object.assign(p, { r: rand(14, 34) * dpr, vy: rand(-.05, -.15) * dpr, vx: rand(-.05, .05) * dpr, a: rand(.06, .16) });
+  if (type === 'petal') Object.assign(p, { r: rand(3, 5) * dpr, vy: rand(.3, .7) * dpr, vx: rand(.1, .4) * dpr, a: rand(.5, .8), rot: rand(0, 6.28),
+                                           y: init ? rand(0, H) : -20, x: rand(-W * .2, W) });
+  return p;
+}
+const parts = [
+  ...Array.from({ length: 70 }, () => makeParticle('dust', true)),
+  ...Array.from({ length: 10 }, () => makeParticle('bokeh', true)),
+  ...Array.from({ length: 12 }, () => makeParticle('petal', true))
+];
+
+function tick() {
+  ctx.clearRect(0, 0, W, H);
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    p.t += .02;
+    p.x += p.vx + Math.sin(p.t) * .2 * dpr;
+    p.y += p.vy;
+    if (p.type === 'petal') {
+      p.rot += .02;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.fillStyle = `rgba(255,200,210,${p.a})`;
+      ctx.beginPath(); ctx.ellipse(0, 0, p.r * 1.6, p.r, 0, 0, 7); ctx.fill(); ctx.restore();
+      if (p.y > H + 20 || p.x > W + 20) parts[i] = makeParticle('petal');
+    } else {
+      const twinkle = p.type === 'dust' ? (.6 + .4 * Math.sin(p.t * 2.3)) : 1;
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+      g.addColorStop(0, `rgba(255,245,220,${p.a * twinkle})`);
+      g.addColorStop(1, 'rgba(255,245,220,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+      if (p.y < -40) parts[i] = makeParticle(p.type);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) tick();
+</script>
+</body>
+</html>
