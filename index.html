@@ -40,7 +40,8 @@
   body.snow #rays, body.snow #flare { display: none; }
 
   /* ⑤ 粒子在 canvas 上畫 */
-  #fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #fx, #gl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #gl { display: none; }
   .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(0,0,0,.55) 100%); }
 
   /* FPS 顯示 */
@@ -74,6 +75,7 @@
     <div class="layer" id="chara"><div class="breath"></div></div>
     <div class="layer" id="flare"></div>
     <canvas id="fx"></canvas>
+    <canvas id="gl"></canvas>
     <div class="vignette"></div>
   </div>
 
@@ -86,7 +88,14 @@
         <button class="btn" data-scene="snow" aria-pressed="false">下雪</button>
       </div>
     </div>
+    <div class="row">繪圖
+      <div class="seg">
+        <button class="btn" data-mode="canvas" aria-pressed="true">Canvas</button>
+        <button class="btn" data-mode="webgl" aria-pressed="false">WebGL</button>
+      </div>
+    </div>
     <div class="row">粒子 <input type="range" id="amount" min="0.25" max="20" step="0.25" value="1"> <span id="amountText">×1</span></div>
+    <small id="glNote" hidden></small>
     <label class="row">背景圖 <span class="btn">選擇</span><input type="file" id="fileBg" accept="image/*"></label>
     <label class="row">人物圖（去背 PNG）<span class="btn">選擇</span><input type="file" id="fileChara" accept="image/*"></label>
     <small>把「粒子」往右拉，看左上角 FPS 什麼時候開始掉，就知道手機的上限。手指在畫面上滑動，粒子會被推開。</small>
@@ -364,11 +373,11 @@ let last = performance.now(), frames = 0, fpsTime = 0;
 function loop(now) {
   const dt = Math.min((now - last) / 1000, 1 / 20);    // 用經過的時間算移動，60Hz 和 120Hz 螢幕速度一樣
   last = now;
-  update(dt);
+  if (useGL()) { ctx.clearRect(0, 0, W, H); glRender(dt); } else update(dt);
   frames++; fpsTime += dt;
   if (fpsTime >= .5) {
     const fps = Math.round(frames / fpsTime);
-    fpsEl.textContent = `FPS ${fps}・粒子 ${parts.length}`;
+    fpsEl.textContent = `FPS ${fps}・粒子 ${(useGL() ? glCount : parts.length).toLocaleString()}${useGL() ? '・WebGL' : ''}`;
     fpsEl.classList.toggle('low', fps < 50);
     frames = 0; fpsTime = 0;
   }
@@ -383,12 +392,16 @@ function setScene(s) {
   document.body.classList.toggle('snow', s === 'snow');
   if (!bg.dataset.user) bg.style.backgroundImage = `url(${BG[s]})`;
   document.querySelectorAll('[data-scene]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scene === s));
-  build();
+  if (typeof setMode === 'function') setMode(mode); else build();
 }
 document.querySelectorAll('[data-scene]').forEach(b => b.onclick = () => setScene(b.dataset.scene));
 
 const amountEl = document.getElementById('amount');
-amountEl.oninput = () => { amount = +amountEl.value; document.getElementById('amountText').textContent = '×' + amount; build(); };
+amountEl.oninput = () => {
+  amount = +amountEl.value;
+  document.getElementById('amountText').textContent = '×' + amount;
+  if (useGL()) glBuild(); else build();
+};
 
 function useFile(input, el) {
   input.addEventListener('change', () => {
@@ -407,6 +420,141 @@ document.getElementById('toggle').onclick = e => {
 };
 // 面板上的操作不要推開粒子
 document.getElementById('panel').addEventListener('pointermove', e => e.stopPropagation());
+
+// =====================================================================
+// 6. WebGL 下雪：雪花交給顯示卡（GPU）畫
+// =====================================================================
+// 原理：CPU 只在一開始給每片雪 4 個亂數（起始 x、起始 y、景深 z、種子）。
+// 之後每一格，每片雪「現在在哪」都由 GPU 用時間直接算出來，CPU 完全不用一片一片處理，
+// 所以可以畫的數量是 Canvas 的好幾十倍。
+let mode = 'canvas', gl = null, glProg = null, glBuf = null, glCount = 0, glTime = 0, windOffset = 0, glU = {};
+const glCanvas = document.getElementById('gl');
+const useGL = () => mode === 'webgl' && scene === 'snow' && gl;
+
+const VS = `#version 300 es
+precision highp float;
+in vec2 corner;              // 一個四邊形的角：(0,0) (1,0) (0,1) (1,1)
+in vec4 seed;                // 每片雪：起始 x、起始 y、景深 z、種子
+uniform vec2 res; uniform float time, dpr, windOff, wind; uniform vec3 pointer;
+out vec2 vLocal; out float vR, vL, vAlpha, vSoft, vSpark;
+void main() {
+  float z = pow(seed.z, 1.6);                         // 遠的多、近的少
+  float r = (1.0 + z * 4.5) * dpr;                    // 半徑
+  float speed = (35.0 + z * 120.0) * dpr;
+  float sway = 0.6 + seed.w;
+  float H = res.y + 100.0, Wd = res.x * 1.3;
+  // 位置：用時間直接算（掉出畫面就從上面重來 → mod）
+  float y = mod(seed.y * H + speed * time, H) - 50.0;
+  float x = seed.x * Wd + windOff * (0.3 + z) + sin(time * sway * 2.0 + seed.w * 40.0) * 12.0 * dpr * sway / (sway * 2.0);
+  x = mod(x, Wd) - res.x * 0.15;
+  vec2 head = vec2(x, y);
+  // 速度（決定拖尾方向和長度）
+  vec2 vel = vec2(wind * (0.3 + z) + cos(time * sway * 2.0 + seed.w * 40.0) * 12.0 * dpr, speed);
+  // 手指推開
+  if (pointer.z > 0.5) {
+    vec2 d = head - pointer.xy; float dist = length(d), R = 120.0 * dpr;
+    if (dist < R && dist > 0.5) head += d / dist * (1.0 - dist / R) * 60.0 * dpr * (0.4 + z);
+  }
+  // 偶爾閃一下
+  float ph = fract(time * 0.08 + seed.w * 13.7);
+  float spark = (z > 0.4) ? smoothstep(0.0, 0.03, ph) * (1.0 - smoothstep(0.03, 0.1, ph)) * step(0.85, fract(seed.w * 91.3)) : 0.0;
+  // 近的雪才有拖尾：長度 = 速度 × 0.05 秒
+  float L = z > 0.55 ? length(vel) * 0.05 : 0.0;
+  float Rq = max(r * (z < 0.3 ? 1.5 : 1.0), spark * r * 4.0) + 1.0;
+  vec2 dir = -normalize(vel), perp = vec2(-dir.y, dir.x);
+  float a = mix(-Rq, L + Rq, corner.y), b = mix(-Rq, Rq, corner.x);
+  vec2 pos = head + dir * a + perp * b;
+  vLocal = vec2(a, b); vR = r * (z < 0.3 ? 1.5 : 1.0); vL = L; vAlpha = 0.35 + z * 0.65; vSoft = z < 0.3 ? 1.0 : 0.45; vSpark = spark;
+  gl_Position = vec4(pos / res * 2.0 - 1.0, 0.0, 1.0) * vec4(1.0, -1.0, 1.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision mediump float;
+in vec2 vLocal; in float vR, vL, vAlpha, vSoft, vSpark;
+out vec4 color;
+void main() {
+  float a = vLocal.x, b = vLocal.y;
+  // 膠囊形：頭是圓的，後面拖一條漸漸變淡的尾巴
+  float d = length(vec2(b, a - clamp(a, 0.0, vL)));
+  float body = 1.0 - smoothstep(vR * (1.0 - vSoft), vR, d);
+  float tail = vL > 0.0 ? mix(1.0, 0.1, clamp(a / max(vL, 0.001), 0.0, 1.0)) : 1.0;
+  float alpha = body * tail * vAlpha;
+  // 星芒：十字形的細線
+  if (vSpark > 0.0) {
+    float s = vR * 4.0;
+    float cross = max((1.0 - smoothstep(0.0, 1.2, abs(b))) * (1.0 - smoothstep(0.0, s, abs(a))),
+                      (1.0 - smoothstep(0.0, 1.2, abs(a))) * (1.0 - smoothstep(0.0, s, abs(b))));
+    alpha = max(alpha, cross * vSpark);
+  }
+  if (alpha < 0.003) discard;
+  color = vec4(vec3(0.94, 0.96, 1.0) * alpha, alpha);   // 預乘透明度
+}`;
+
+function glInit() {
+  if (gl) return true;
+  gl = glCanvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false });
+  if (!gl) return false;
+  const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  glProg = gl.createProgram();
+  gl.attachShader(glProg, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(glProg, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(glProg);
+  if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(glProg));
+  gl.useProgram(glProg);
+  ['res', 'time', 'dpr', 'windOff', 'wind', 'pointer'].forEach(n => glU[n] = gl.getUniformLocation(glProg, n));
+  // 共用的四邊形（兩個三角形）
+  const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 1,1]), gl.STATIC_DRAW);
+  const cLoc = gl.getAttribLocation(glProg, 'corner');
+  gl.enableVertexAttribArray(cLoc); gl.vertexAttribPointer(cLoc, 2, gl.FLOAT, false, 0, 0);
+  // 每片雪的亂數（instancing：同一個四邊形畫很多次，每次換一組亂數）
+  glBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+  const sLoc = gl.getAttribLocation(glProg, 'seed');
+  gl.enableVertexAttribArray(sLoc); gl.vertexAttribPointer(sLoc, 4, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribDivisor(sLoc, 1);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  return true;
+}
+function glBuild() {
+  glCount = Math.round(BASE.snow.flake * amount);
+  const data = new Float32Array(glCount * 4);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random();
+  gl.bindBuffer(gl.ARRAY_BUFFER, glBuf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+}
+function glRender(dt) {
+  glTime += dt;
+  const windNow = noise(glTime * .08, 7.7) * 90 * dpr;
+  windOffset += windNow * dt;
+  if (glCanvas.width !== W || glCanvas.height !== H) { glCanvas.width = W; glCanvas.height = H; }
+  gl.viewport(0, 0, W, H);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform2f(glU.res, W, H); gl.uniform1f(glU.time, glTime); gl.uniform1f(glU.dpr, dpr);
+  gl.uniform1f(glU.windOff, windOffset % (W * 1.3)); gl.uniform1f(glU.wind, windNow);
+  gl.uniform3f(glU.pointer, pointer.x, pointer.y, pointer.active ? 1 : 0);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, glCount);
+}
+
+// 切換 Canvas / WebGL
+function setMode(m) {
+  const note = document.getElementById('glNote');
+  if (m === 'webgl') {
+    let ok = false;
+    try { ok = glInit(); } catch (e) { console.error(e); }
+    if (!ok) { note.hidden = false; note.textContent = '這個瀏覽器不支援 WebGL2，維持 Canvas。'; m = 'canvas'; }
+  }
+  mode = m;
+  document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === m));
+  // WebGL 能畫的量大很多：滑桿上限拉到 ×1000（約 26 萬片）
+  amountEl.max = m === 'webgl' ? 1000 : 20;
+  amountEl.step = m === 'webgl' ? 1 : 0.25;
+  amountEl.min = m === 'webgl' ? 1 : 0.25;
+  if (m === 'webgl' && amount < 1) { amount = 1; amountEl.value = 1; document.getElementById('amountText').textContent = '×1'; }
+  if (m === 'canvas' && amount > 20) { amount = 20; amountEl.value = 20; document.getElementById('amountText').textContent = '×20'; }
+  if (m === 'webgl' && scene !== 'snow') { note.hidden = false; note.textContent = 'WebGL 只用在「下雪」場景，切到下雪就會啟用。'; }
+  else if (m === 'webgl') note.hidden = true;
+  glCanvas.style.display = useGL() ? 'block' : 'none';
+  if (useGL()) glBuild(); else build();
+}
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
 setScene('room');
 if (!matchMedia('(prefers-reduced-motion: reduce)').matches) requestAnimationFrame(loop);
