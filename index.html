@@ -74,7 +74,6 @@
   <div class="panel" id="panel">
     <div class="row">雪量 <input type="range" id="amount" min="1" max="1000" step="1" value="2"> <span class="val" id="amountText">×2</span></div>
     <div class="row">人物大小 <input type="range" id="charaSize" min="0" max="100" step="1" value="80"> <span class="val" id="charaSizeText">80%</span></div>
-    <div class="row">髮絲飄動 <input type="range" id="hairAmt" min="0" max="300" step="5" value="100"> <span class="val" id="hairAmtText">100%</span></div>
     <label class="row">換人物圖（去背 PNG）<span class="btn">選擇</span><input type="file" id="fileChara" accept="image/*"></label>
     <small id="note">雪量往右拉，看左上角 FPS 什麼時候開始掉，就知道手機的上限。手指在畫面上滑動，雪會被推開；傾斜手機有立體視差。</small>
   </div>
@@ -309,7 +308,7 @@ function snowRender(dt) {
 // 所以臉、衣服（遮罩是黑的）完全不動，只有頭髮像被風吹一樣擺動，而且波會從上往下傳。
 const charaBox = document.getElementById('chara'), charaCanvas = document.getElementById('charaGL');
 const cg = charaCanvas.getContext('webgl2', { premultipliedAlpha: true, alpha: true });
-let charaProg, texImg, texMask, charaReady = false, charaT = 0, hairAmt = 1, charaSize = .8;
+let charaProg, texImg, texMask, charaReady = false, charaT = 0, charaSize = .8;
 const cU = {};
 const CVS = `#version 300 es
 in vec2 p; out vec2 uv;
@@ -375,7 +374,9 @@ function charaRender(dt) {
   cg.uniform1f(cU.time, charaT);
   cg.uniform1f(cU.wind, Math.max(-1, Math.min(1, wind / dpr / 300)));
   cg.uniform1f(cU.gust, gust);
-  cg.uniform1f(cU.amt, hairAmt);
+  // 飄動幅度自己變化：微風時輕輕擺，偶爾一陣比較大的風（噪聲控制，不會規律重複），陣風來時擺最大
+  const breeze = .75 + .9 * Math.max(0, noise(charaT * .12, 4.2) + .35);
+  cg.uniform1f(cU.amt, breeze + gust * 1.4);
   cg.drawArrays(cg.TRIANGLE_STRIP, 0, 4);
 }
 
@@ -500,7 +501,6 @@ function loop(now) {
 const $ = id => document.getElementById(id);
 $('amount').oninput = e => { amount = +e.target.value; $('amountText').textContent = '×' + amount; snowBuild(); };
 $('charaSize').oninput = e => { charaSize = e.target.value / 100; $('charaSizeText').textContent = e.target.value + '%'; layoutChara(); };
-$('hairAmt').oninput = e => { hairAmt = e.target.value / 100; $('hairAmtText').textContent = e.target.value + '%'; };
 $('fileChara').addEventListener('change', e => {
   const f = e.target.files[0]; if (!f) return;
   loadChara(URL.createObjectURL(f), null);
