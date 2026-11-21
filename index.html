@@ -14,10 +14,10 @@
   .layer { position: absolute; inset: -6%; background-size: cover; background-position: center; will-change: transform; }
 
   /* ① 背景：鏡頭緩慢推近＋平移（移動幅度小 → 看起來在遠處） */
-  #bg { animation: camBg 18s ease-in-out infinite alternate; }
+  #bg { animation: camBg 18s ease-in-out infinite alternate; transition: opacity .6s; }
   @keyframes camBg { from { transform: scale(1.02) translate(-1%, 0); } to { transform: scale(1.08) translate(1%, -1%); } }
 
-  /* ② 光束：透明度忽明忽暗 */
+  /* ② 光束：透明度忽明忽暗（只有室內場景） */
   #rays { mix-blend-mode: screen; animation: rays 6s ease-in-out infinite alternate; }
   @keyframes rays { 0% { opacity: .35; } 40% { opacity: .75; } 60% { opacity: .55; } 100% { opacity: .85; } }
 
@@ -28,7 +28,7 @@
   @keyframes camChara { from { transform: translate(-2.5%, 0) scale(1); } to { transform: translate(2%, -1%) scale(1.03); } }
   @keyframes breath { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.004, 1.012); } }
 
-  /* ④ 彩虹眩光：用濾色疊上去，慢慢飄 */
+  /* ④ 彩虹眩光：用濾色疊上去，慢慢飄（只有室內場景） */
   #flare { inset: auto; left: -10%; top: -8%; width: 70vmax; height: 70vmax; border-radius: 50%; mix-blend-mode: screen; opacity: .35;
     background: conic-gradient(from 200deg, transparent 0 40%, #ff6b6b 45%, #ffd56b 50%, #6bff9c 55%, #6bc8ff 60%, #b46bff 65%, transparent 70% 100%);
     -webkit-mask: radial-gradient(circle, transparent 54%, #000 56%, #000 60%, transparent 63%);
@@ -36,19 +36,31 @@
     filter: blur(6px); animation: flare 14s ease-in-out infinite alternate; }
   @keyframes flare { from { transform: rotate(-8deg) translate(0, 0); opacity: .25; } to { transform: rotate(6deg) translate(3%, 2%); opacity: .45; } }
 
+  /* 下雪場景時把室內專用的圖層關掉 */
+  body.snow #rays, body.snow #flare { display: none; }
+
   /* ⑤ 粒子在 canvas 上畫 */
   #fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  /* 四周暗角，讓視線集中在中間 */
   .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(0,0,0,.55) 100%); }
 
-  /* 上傳面板 */
-  .panel { position: fixed; left: 12px; bottom: 12px; z-index: 5; display: flex; flex-direction: column; gap: 6px;
-    background: rgba(20,16,14,.72); color: #f3e9df; padding: 10px 12px; border-radius: 12px; font-size: 13px; max-width: 280px;
+  /* FPS 顯示 */
+  .fps { position: fixed; top: 10px; left: 10px; z-index: 6; background: rgba(0,0,0,.5); color: #b8ffb0;
+    font: 600 12px/1.4 ui-monospace, Menlo, Consolas, monospace; padding: 4px 8px; border-radius: 8px; pointer-events: none; }
+  .fps.low { color: #ffb0a0; }
+
+  /* 面板 */
+  .panel { position: fixed; left: 12px; bottom: 12px; z-index: 5; display: flex; flex-direction: column; gap: 8px;
+    background: rgba(20,16,14,.75); color: #f3e9df; padding: 10px 12px; border-radius: 12px; font-size: 13px; width: min(300px, calc(100vw - 24px));
     backdrop-filter: blur(6px); transition: opacity .3s; }
   .panel.hide { opacity: 0; pointer-events: none; }
-  .panel label { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+  .panel .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel label.row { cursor: pointer; }
   .panel input[type=file] { display: none; }
-  .panel .btn { background: #e8d5c0; color: #2a1d14; border-radius: 999px; padding: 4px 10px; font-weight: 600; white-space: nowrap; }
+  .panel input[type=range] { flex: 1; accent-color: #e8d5c0; }
+  .btn { background: #e8d5c0; color: #2a1d14; border: 0; border-radius: 999px; padding: 4px 10px; font-weight: 600; white-space: nowrap; font-size: 13px; cursor: pointer; font-family: inherit; }
+  .seg { display: flex; gap: 4px; }
+  .seg .btn { background: rgba(232,213,192,.25); color: #f3e9df; }
+  .seg .btn[aria-pressed="true"] { background: #e8d5c0; color: #2a1d14; }
   .panel small { color: #c9b8a8; line-height: 1.5; }
   .toggle { position: fixed; right: 12px; bottom: 12px; z-index: 6; background: rgba(20,16,14,.6); color: #fff; border: 0;
     border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
@@ -65,25 +77,35 @@
     <div class="vignette"></div>
   </div>
 
+  <div class="fps" id="fps">FPS --</div>
+
   <div class="panel" id="panel">
-    <label>背景圖 <span class="btn">選擇</span><input type="file" id="fileBg" accept="image/*"></label>
-    <label>人物圖（去背 PNG）<span class="btn">選擇</span><input type="file" id="fileChara" accept="image/*"></label>
-    <small>還沒選圖時，背景是程式畫的示範房間。人物圖要用背景透明的 PNG，才看得到後面的房間。</small>
+    <div class="row">場景
+      <div class="seg">
+        <button class="btn" data-scene="room" aria-pressed="true">室內光點</button>
+        <button class="btn" data-scene="snow" aria-pressed="false">下雪</button>
+      </div>
+    </div>
+    <div class="row">粒子 <input type="range" id="amount" min="0.25" max="20" step="0.25" value="1"> <span id="amountText">×1</span></div>
+    <label class="row">背景圖 <span class="btn">選擇</span><input type="file" id="fileBg" accept="image/*"></label>
+    <label class="row">人物圖（去背 PNG）<span class="btn">選擇</span><input type="file" id="fileChara" accept="image/*"></label>
+    <small>把「粒子」往右拉，看左上角 FPS 什麼時候開始掉，就知道手機的上限。手指在畫面上滑動，粒子會被推開。</small>
   </div>
   <button class="toggle" id="toggle">隱藏面板</button>
 
 <script>
-// ===== 1. 沒有上傳背景時，用 canvas 畫一個示範房間（窗戶＋木牆）=====
+// =====================================================================
+// 1. 程式畫的示範背景
+// =====================================================================
+// 室內：木牆＋大窗戶
 function drawRoom(w, h) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d');
-  // 木頭牆
   let grad = g.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, '#3b2a20'); grad.addColorStop(1, '#1e1510');
   g.fillStyle = grad; g.fillRect(0, 0, w, h);
   g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 2;
   for (let x = 0; x < w; x += w / 18) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h * .72); g.stroke(); }
-  // 大窗戶
   const wx = w * .52, wy = h * .1, ww = w * .36, wh = h * .5;
   grad = g.createLinearGradient(wx, wy, wx, wy + wh);
   grad.addColorStop(0, '#f6f1e4'); grad.addColorStop(1, '#bcd3d6');
@@ -92,16 +114,46 @@ function drawRoom(w, h) {
   for (let i = 1; i < 4; i++) g.fillRect(wx + ww * i / 4 - 4, wy, 8, wh);
   for (let i = 1; i < 3; i++) g.fillRect(wx, wy + wh * i / 3 - 4, ww, 8);
   g.lineWidth = 14; g.strokeStyle = '#2a1d15'; g.strokeRect(wx, wy, ww, wh);
-  // 桌子和地板
   g.fillStyle = '#4a3324'; g.fillRect(0, h * .72, w, h * .28);
   g.fillStyle = '#5c4030'; g.fillRect(w * .05, h * .66, w * .4, h * .035);
-  // 幾盆植物（簡單的綠色圓）
   g.fillStyle = '#3f5a3a';
   [[.1, .62], [.18, .6], [.3, .63]].forEach(([x, y]) => { g.beginPath(); g.ellipse(w * x, h * y, w * .03, h * .04, 0, 0, 7); g.fill(); });
   return c.toDataURL();
 }
 
-// 光束：從窗戶斜斜射進來的幾道光
+// 下雪：夜空、月光、遠山、松樹、雪地
+function drawSnow(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  let grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#0f1630'); grad.addColorStop(.55, '#2b3a5e'); grad.addColorStop(1, '#5d6f93');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  // 月光
+  grad = g.createRadialGradient(w * .75, h * .18, 0, w * .75, h * .18, w * .35);
+  grad.addColorStop(0, 'rgba(230,240,255,.9)'); grad.addColorStop(.06, 'rgba(230,240,255,.55)'); grad.addColorStop(1, 'rgba(230,240,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  // 三層山，越近越暗
+  const hills = [['#3f4f74', .52, .06], ['#2d3a5a', .6, .08], ['#1e2842', .68, .05]];
+  hills.forEach(([col, base, amp], k) => {
+    g.fillStyle = col; g.beginPath(); g.moveTo(0, h);
+    for (let x = 0; x <= w; x += 10) g.lineTo(x, h * base - Math.sin(x / w * (5 + k * 2) + k) * h * amp - Math.sin(x / w * 17 + k) * h * .012);
+    g.lineTo(w, h); g.fill();
+  });
+  // 松樹剪影
+  g.fillStyle = '#141b2e';
+  for (let i = 0; i < 26; i++) {
+    const x = (i / 26) * w + Math.sin(i * 7.3) * 20, base = h * (.74 + Math.sin(i * 3.1) * .02), th = h * (.08 + (i % 4) * .018);
+    g.beginPath(); g.moveTo(x, base - th); g.lineTo(x - th * .28, base); g.lineTo(x + th * .28, base); g.fill();
+  }
+  // 雪地
+  grad = g.createLinearGradient(0, h * .74, 0, h);
+  grad.addColorStop(0, '#c9d6ec'); grad.addColorStop(1, '#eef3fb');
+  g.fillStyle = grad; g.beginPath(); g.moveTo(0, h);
+  for (let x = 0; x <= w; x += 10) g.lineTo(x, h * .76 - Math.sin(x / w * 3) * h * .02);
+  g.lineTo(w, h); g.fill();
+  return c.toDataURL();
+}
+
 function drawRays(w, h) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d');
@@ -118,19 +170,230 @@ function drawRays(w, h) {
 }
 
 const bg = document.getElementById('bg'), rays = document.getElementById('rays'), chara = document.getElementById('chara');
-function paintDefault() {
-  const w = 1200, h = 900;
-  if (!bg.dataset.user) bg.style.backgroundImage = `url(${drawRoom(w, h)})`;
-  rays.style.backgroundImage = `url(${drawRays(w, h)})`;
-}
-paintDefault();
+const BG = { room: drawRoom(1200, 900), snow: drawSnow(1200, 900) };
+rays.style.backgroundImage = `url(${drawRays(1200, 900)})`;
 
-// ===== 2. 上傳自己的圖 =====
+// =====================================================================
+// 2. 噪聲（Perlin noise）：讓粒子順著一股看不見的「氣流」飄，而不是直線
+// =====================================================================
+const perm = new Uint8Array(512);
+(() => { const p = [...Array(256).keys()]; for (let i = 255; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; } for (let i = 0; i < 512; i++) perm[i] = p[i & 255]; })();
+const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+const lerp = (a, b, t) => a + (b - a) * t;
+function grad2(h, x, y) { switch (h & 3) { case 0: return x + y; case 1: return -x + y; case 2: return x - y; default: return -x - y; } }
+function noise(x, y) {                       // 回傳約 -1～1 的平滑亂數
+  const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+  x -= Math.floor(x); y -= Math.floor(y);
+  const u = fade(x), v = fade(y), a = perm[X] + Y, b = perm[X + 1] + Y;
+  return lerp(lerp(grad2(perm[a], x, y), grad2(perm[b], x - 1, y), u),
+              lerp(grad2(perm[a + 1], x, y - 1), grad2(perm[b + 1], x - 1, y - 1), u), v);
+}
+// 氣流方向：用噪聲決定每個位置的風向角度，隨時間慢慢改變
+function flow(x, y, t, scale) {
+  const a = noise(x * scale, y * scale + t) * Math.PI * 2;
+  return [Math.cos(a), Math.sin(a)];
+}
+
+// =====================================================================
+// 3. 粒子系統
+// =====================================================================
+const cv = document.getElementById('fx'), ctx = cv.getContext('2d');
+let W, H, dpr;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.width = Math.round(innerWidth * dpr); H = cv.height = Math.round(innerHeight * dpr);
+}
+addEventListener('resize', resize); resize();
+const rand = (a, b) => a + Math.random() * (b - a);
+
+// 預先畫好的「光點貼圖」，每幀直接貼上去，比每顆粒子都重算漸層快很多
+function sprite(r, stops) {
+  const c = document.createElement('canvas'); c.width = c.height = r * 2;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(r, r, 0, r, r, r);
+  stops.forEach(([o, col]) => gr.addColorStop(o, col));
+  g.fillStyle = gr; g.fillRect(0, 0, r * 2, r * 2); return c;
+}
+const SPR = {
+  glow:  sprite(32, [[0, 'rgba(255,246,224,1)'], [.25, 'rgba(255,236,200,.6)'], [1, 'rgba(255,230,190,0)']]),
+  bokeh: sprite(64, [[0, 'rgba(255,240,215,.5)'], [.7, 'rgba(255,240,215,.35)'], [1, 'rgba(255,240,215,0)']]),
+  snow:  sprite(32, [[0, 'rgba(255,255,255,1)'], [.45, 'rgba(240,246,255,.85)'], [1, 'rgba(230,240,255,0)']]),
+  snowSoft: sprite(32, [[0, 'rgba(235,242,255,.55)'], [1, 'rgba(235,242,255,0)']])
+};
+
+let scene = 'room', amount = 1;
+let parts = [];
+const BASE = { room: { dust: 90, bokeh: 12, petal: 14 }, snow: { flake: 260 } };
+
+// 建立一顆粒子。z = 景深（0 遠 → 1 近）：越近越大、越亮、越快
+function make(type, init) {
+  const z = Math.pow(Math.random(), 1.6);            // 遠的多、近的少，比較自然
+  const p = { type, z, x: rand(0, W), y: init ? rand(0, H) : 0, t: rand(0, 100), trail: [] };
+  if (type === 'dust') {
+    Object.assign(p, { r: (1 + z * 2.4) * dpr, speed: (12 + z * 30) * dpr, a: .35 + z * .6,
+      hue: Math.random() < .2 ? 'warm' : 'white', sparkle: 0 });
+    if (!init) p.y = H + 10;
+  } else if (type === 'bokeh') {
+    Object.assign(p, { r: (16 + z * 26) * dpr, speed: (3 + z * 6) * dpr, a: .05 + z * .12 });
+    if (!init) p.y = H + 60;
+  } else if (type === 'petal') {
+    Object.assign(p, { r: (2.5 + z * 3.5) * dpr, speed: (25 + z * 45) * dpr, a: .45 + z * .45, rot: rand(0, 6.28), spin: rand(-2, 2),
+      flip: rand(0, 6.28), flipSpeed: rand(2, 5), color: ['255,196,206', '255,214,222', '250,180,196'][Math.floor(Math.random() * 3)] });
+    if (!init) { p.y = -20; p.x = rand(-W * .2, W); }
+  } else if (type === 'flake') {
+    Object.assign(p, { r: (1 + z * 4.5) * dpr, speed: (35 + z * 120) * dpr, a: .35 + z * .65, sway: rand(.6, 1.6), sparkle: 0 });
+    if (!init) { p.y = -10; p.x = rand(-W * .1, W * 1.1); }
+  }
+  return p;
+}
+
+function build() {
+  const base = BASE[scene]; parts = [];
+  for (const type in base) for (let i = 0; i < Math.round(base[type] * amount); i++) parts.push(make(type, true));
+}
+
+// 手指／滑鼠推開粒子
+const pointer = { x: -9999, y: -9999, active: false };
+addEventListener('pointermove', e => { pointer.x = e.clientX * dpr; pointer.y = e.clientY * dpr; pointer.active = true; });
+addEventListener('pointerdown', e => { pointer.x = e.clientX * dpr; pointer.y = e.clientY * dpr; pointer.active = true; });
+addEventListener('pointerup', () => { pointer.active = false; });
+addEventListener('pointerleave', () => { pointer.active = false; });
+function push(p, dt) {
+  if (!pointer.active) return;
+  const dx = p.x - pointer.x, dy = p.y - pointer.y, d2 = dx * dx + dy * dy, R = 120 * dpr;
+  if (d2 < R * R && d2 > 1) { const d = Math.sqrt(d2), f = (1 - d / R) * 600 * dpr * dt * (.4 + p.z); p.x += dx / d * f; p.y += dy / d * f; }
+}
+
+// 拖尾：記下最近幾個位置，畫成越來越淡的線
+function addTrail(p, max) { p.trail.push(p.x, p.y); if (p.trail.length > max * 2) p.trail.splice(0, 2); }
+function drawTrail(p, rgb, alpha, width) {
+  const tr = p.trail; if (tr.length < 4) return;
+  ctx.lineCap = 'round';
+  for (let i = 2; i < tr.length; i += 2) {
+    const k = i / tr.length;                           // 越舊越淡、越細
+    ctx.strokeStyle = `rgba(${rgb},${alpha * k * .6})`; ctx.lineWidth = width * k;
+    ctx.beginPath(); ctx.moveTo(tr[i - 2], tr[i - 1]); ctx.lineTo(tr[i], tr[i + 1]); ctx.stroke();
+  }
+}
+
+// 偶爾閃出的十字星芒
+function star(x, y, size, alpha) {
+  ctx.strokeStyle = `rgba(255,250,235,${alpha})`; ctx.lineWidth = Math.max(1, size * .08);
+  ctx.beginPath(); ctx.moveTo(x - size, y); ctx.lineTo(x + size, y); ctx.moveTo(x, y - size); ctx.lineTo(x, y + size); ctx.stroke();
+}
+
+let time = 0, wind = 0;
+function update(dt) {
+  time += dt;
+  // 下雪的整體風：用噪聲讓風一陣強一陣弱
+  wind = noise(time * .08, 7.7) * 90 * dpr;
+
+  ctx.clearRect(0, 0, W, H);
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    p.t += dt;
+
+    if (p.type === 'dust') {
+      const [fx, fy] = flow(p.x / dpr, p.y / dpr, time * .05, .004);      // 順著氣流飄
+      p.x += (fx * 14 * dpr) * dt;
+      p.y += (fy * 8 * dpr - p.speed) * dt;
+      push(p, dt);
+      addTrail(p, 6);
+      if (p.sparkle <= 0 && Math.random() < .0015) p.sparkle = 1;          // 偶爾閃一下
+      p.sparkle = Math.max(0, p.sparkle - dt * 1.6);
+      const tw = .55 + .45 * Math.sin(p.t * (2 + p.z * 2));                 // 自己的閃爍節奏
+      ctx.globalCompositeOperation = 'lighter';
+      drawTrail(p, p.hue === 'warm' ? '255,214,160' : '255,246,226', p.a * tw, p.r * 1.2);
+      const s = p.r * 4 * (1 + p.sparkle * .8);
+      ctx.globalAlpha = Math.min(1, p.a * tw + p.sparkle * .5);
+      ctx.drawImage(SPR.glow, p.x - s, p.y - s, s * 2, s * 2);
+      if (p.sparkle > 0) star(p.x, p.y, s * 1.6, p.sparkle * .8);
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+      if (p.y < -30 || p.x < -40 || p.x > W + 40) parts[i] = make('dust');
+    }
+
+    else if (p.type === 'bokeh') {
+      p.x += Math.sin(p.t * .3) * 4 * dpr * dt; p.y -= p.speed * dt;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = p.a * (.7 + .3 * Math.sin(p.t * .8));
+      ctx.drawImage(SPR.bokeh, p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+      if (p.y < -p.r * 2) parts[i] = make('bokeh');
+    }
+
+    else if (p.type === 'petal') {
+      const [fx] = flow(p.x / dpr, p.y / dpr, time * .04, .003);
+      p.x += (30 + fx * 40) * dpr * dt * (.5 + p.z);
+      p.y += p.speed * dt;
+      push(p, dt);
+      p.rot += p.spin * dt; p.flip += p.flipSpeed * dt;
+      const sx = Math.cos(p.flip);                      // 翻面：寬度在 -1～1 之間變化
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.scale(sx, 1);
+      ctx.fillStyle = `rgba(${p.color},${p.a * (.6 + .4 * Math.abs(sx))})`;   // 側面時比較暗
+      ctx.beginPath(); ctx.ellipse(0, 0, p.r * 1.7, p.r, 0, 0, 6.29); ctx.fill();
+      ctx.restore();
+      if (p.y > H + 20 || p.x > W + 40) parts[i] = make('petal');
+    }
+
+    else if (p.type === 'flake') {
+      const [fx] = flow(p.x / dpr, p.y / dpr, time * .1, .0025);
+      p.x += (wind * (.3 + p.z) + fx * 20 * dpr + Math.sin(p.t * p.sway * 2) * 12 * dpr * p.sway) * dt;
+      p.y += p.speed * dt;
+      push(p, dt);
+      if (p.z > .55) addTrail(p, 5);                    // 近的雪才有拖尾（看起來比較快）
+      if (p.sparkle <= 0 && p.z > .4 && Math.random() < .0008) p.sparkle = 1;
+      p.sparkle = Math.max(0, p.sparkle - dt * 2);
+      if (p.z > .55) drawTrail(p, '235,242,255', p.a * .7, p.r * .9);
+      const img = p.z < .3 ? SPR.snowSoft : SPR.snow;   // 遠的雪比較糊
+      const s = p.r * (p.z < .3 ? 3 : 2.2);
+      ctx.globalAlpha = p.a;
+      ctx.drawImage(img, p.x - s, p.y - s, s * 2, s * 2);
+      if (p.sparkle > 0) { ctx.globalCompositeOperation = 'lighter'; star(p.x, p.y, s * 2, p.sparkle * .9); ctx.globalCompositeOperation = 'source-over'; }
+      ctx.globalAlpha = 1;
+      if (p.y > H + 20) parts[i] = make('flake');
+      else if (p.x > W * 1.15) { p.x = -W * .1; p.trail = []; }
+      else if (p.x < -W * .15) { p.x = W * 1.1; p.trail = []; }
+    }
+  }
+}
+
+// =====================================================================
+// 4. 主迴圈＋FPS
+// =====================================================================
+const fpsEl = document.getElementById('fps');
+let last = performance.now(), frames = 0, fpsTime = 0;
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 1 / 20);    // 用經過的時間算移動，60Hz 和 120Hz 螢幕速度一樣
+  last = now;
+  update(dt);
+  frames++; fpsTime += dt;
+  if (fpsTime >= .5) {
+    const fps = Math.round(frames / fpsTime);
+    fpsEl.textContent = `FPS ${fps}・粒子 ${parts.length}`;
+    fpsEl.classList.toggle('low', fps < 50);
+    frames = 0; fpsTime = 0;
+  }
+  requestAnimationFrame(loop);
+}
+
+// =====================================================================
+// 5. 面板
+// =====================================================================
+function setScene(s) {
+  scene = s;
+  document.body.classList.toggle('snow', s === 'snow');
+  if (!bg.dataset.user) bg.style.backgroundImage = `url(${BG[s]})`;
+  document.querySelectorAll('[data-scene]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scene === s));
+  build();
+}
+document.querySelectorAll('[data-scene]').forEach(b => b.onclick = () => setScene(b.dataset.scene));
+
+const amountEl = document.getElementById('amount');
+amountEl.oninput = () => { amount = +amountEl.value; document.getElementById('amountText').textContent = '×' + amount; build(); };
+
 function useFile(input, el) {
   input.addEventListener('change', () => {
     const f = input.files[0]; if (!f) return;
-    const url = URL.createObjectURL(f);
-    el.style.backgroundImage = `url(${url})`;
+    el.style.backgroundImage = `url(${URL.createObjectURL(f)})`;
     el.dataset.user = '1';
   });
 }
@@ -142,56 +405,11 @@ document.getElementById('toggle').onclick = e => {
   p.classList.toggle('hide');
   e.target.textContent = p.classList.contains('hide') ? '顯示面板' : '隱藏面板';
 };
+// 面板上的操作不要推開粒子
+document.getElementById('panel').addEventListener('pointermove', e => e.stopPropagation());
 
-// ===== 3. 粒子：飄浮光點、散景、花瓣 =====
-const cv = document.getElementById('fx'), ctx = cv.getContext('2d');
-let W, H, dpr;
-function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = cv.width = innerWidth * dpr; H = cv.height = innerHeight * dpr;
-}
-addEventListener('resize', resize); resize();
-
-const rand = (a, b) => a + Math.random() * (b - a);
-function makeParticle(type, init) {
-  const p = { type, x: rand(0, W), y: init ? rand(0, H) : H + 20, t: rand(0, 6.28) };
-  if (type === 'dust')  Object.assign(p, { r: rand(1, 2.6) * dpr, vy: rand(-.15, -.45) * dpr, vx: rand(-.1, .1) * dpr, a: rand(.4, .9) });
-  if (type === 'bokeh') Object.assign(p, { r: rand(14, 34) * dpr, vy: rand(-.05, -.15) * dpr, vx: rand(-.05, .05) * dpr, a: rand(.06, .16) });
-  if (type === 'petal') Object.assign(p, { r: rand(3, 5) * dpr, vy: rand(.3, .7) * dpr, vx: rand(.1, .4) * dpr, a: rand(.5, .8), rot: rand(0, 6.28),
-                                           y: init ? rand(0, H) : -20, x: rand(-W * .2, W) });
-  return p;
-}
-const parts = [
-  ...Array.from({ length: 70 }, () => makeParticle('dust', true)),
-  ...Array.from({ length: 10 }, () => makeParticle('bokeh', true)),
-  ...Array.from({ length: 12 }, () => makeParticle('petal', true))
-];
-
-function tick() {
-  ctx.clearRect(0, 0, W, H);
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    p.t += .02;
-    p.x += p.vx + Math.sin(p.t) * .2 * dpr;
-    p.y += p.vy;
-    if (p.type === 'petal') {
-      p.rot += .02;
-      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
-      ctx.fillStyle = `rgba(255,200,210,${p.a})`;
-      ctx.beginPath(); ctx.ellipse(0, 0, p.r * 1.6, p.r, 0, 0, 7); ctx.fill(); ctx.restore();
-      if (p.y > H + 20 || p.x > W + 20) parts[i] = makeParticle('petal');
-    } else {
-      const twinkle = p.type === 'dust' ? (.6 + .4 * Math.sin(p.t * 2.3)) : 1;
-      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-      g.addColorStop(0, `rgba(255,245,220,${p.a * twinkle})`);
-      g.addColorStop(1, 'rgba(255,245,220,0)');
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
-      if (p.y < -40) parts[i] = makeParticle(p.type);
-    }
-  }
-  requestAnimationFrame(tick);
-}
-if (!matchMedia('(prefers-reduced-motion: reduce)').matches) tick();
+setScene('room');
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) requestAnimationFrame(loop);
 </script>
 </body>
 </html>
