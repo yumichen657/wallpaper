@@ -307,7 +307,7 @@ addEventListener('pointerup', () => { pointer.active = false; });
 addEventListener('pointerleave', () => { pointer.active = false; });
 function push(p, dt) {
   if (!pointer.active) return;
-  const dx = p.x - pointer.x, dy = p.y - pointer.y, d2 = dx * dx + dy * dy, R = 120 * dpr;
+  const dx = p.x - (pointer.x - par.fx.x * dpr), dy = p.y - (pointer.y - par.fx.y * dpr), d2 = dx * dx + dy * dy, R = 120 * dpr;
   if (d2 < R * R && d2 > 1) { const d = Math.sqrt(d2), f = (1 - d / R) * 600 * dpr * dt * (.4 + p.z); p.x += dx / d * f; p.y += dy / d * f; }
 }
 
@@ -333,7 +333,6 @@ let time = 0, wind = 0;
 function update(dt) {
   time += dt;
   // 下雪的整體風：用噪聲讓風一陣強一陣弱
-  wind = noise(time * .08, 7.7) * 90 * dpr;
 
   ctx.clearRect(0, 0, W, H);
   for (let i = 0; i < parts.length; i++) {
@@ -383,10 +382,24 @@ function update(dt) {
     }
 
     else if (p.type === 'flake') {
-      const [fx] = flow(p.x / dpr, p.y / dpr, time * .1, .0025);
-      p.x += (wind * (.3 + p.z) + fx * 20 * dpr + Math.sin(p.t * p.sway * 2) * 12 * dpr * p.sway) * dt;
-      p.y += p.speed * dt;
+      p.landed = p.landed || 0;
+      if (p.landed > 0) {                               // 已經落地：停住，慢慢融進積雪裡
+        p.landed -= dt;
+        ctx.globalAlpha = p.a * Math.min(1, p.landed / 1.5);
+        const s = p.r * 1.8; ctx.drawImage(SPR.snow, p.x - s, p.y - s * .6, s * 2, s * 1.2);
+        ctx.globalAlpha = 1;
+        if (p.landed <= 0) parts[i] = make('flake');
+        continue;
+      }
+      const [fx, fy] = flow(p.x / dpr, p.y / dpr, time * .1, .0025);
+      p.x += (wind * (.3 + p.z) + fx * (20 + gust * 120) * dpr + Math.sin(p.t * p.sway * 2) * 12 * dpr * p.sway) * dt;
+      p.y += (p.speed + fy * gust * 90 * dpr) * dt;     // 陣風來時會打旋
       push(p, dt);
+      // 落地：近的雪落在積雪靠前面的地方，遠一點的落在比較後面
+      if (p.z > .45 && groundTop > 0) {
+        const landY = groundTop + (p.z - .45) / .55 * (H - groundTop) * .8;
+        if (p.y >= landY) { p.y = landY; p.landed = 1.5 + Math.random(); p.trail = []; continue; }
+      }
       const trail = p.z > .55 && !p.crystal;
       if (trail) addTrail(p, 5);                        // 近的雪才有拖尾（看起來比較快）
       if (p.sparkle <= 0 && p.z > .4 && Math.random() < .0008) p.sparkle = 1;
@@ -404,6 +417,15 @@ function update(dt) {
       }
       const s = p.r * 2.2;
       if (p.sparkle > 0) { ctx.globalCompositeOperation = 'lighter'; star(p.x, p.y, s * 2, p.sparkle * .9); ctx.globalCompositeOperation = 'source-over'; }
+      if (lamp.on) {                                    // 飄過木屋窗戶的暖光時被照亮
+        const dx = p.x - lamp.x, dy = p.y - lamp.y, d = Math.sqrt(dx * dx + dy * dy);
+        if (d < lamp.r) {
+          const k = Math.pow(1 - d / lamp.r, 2);
+          ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = k * .9;
+          ctx.drawImage(SPR.glow, p.x - s * 1.4, p.y - s * 1.4, s * 2.8, s * 2.8);
+          ctx.globalCompositeOperation = 'source-over';
+        }
+      }
       ctx.globalAlpha = 1;
       if (p.y > H + 20) parts[i] = make('flake');
       else if (p.x > W * 1.15) { p.x = -W * .1; p.trail = []; }
@@ -440,6 +462,7 @@ function ambient(dt) {
   sctx.setTransform(1, 0, 0, 1, 0, 0); sctx.clearRect(0, 0, sw, sh);
   if (showSky) {
     sctx.setTransform(dpr * m.s, 0, 0, dpr * m.s, dpr * m.ox, dpr * m.oy);   // 之後用背景圖的座標畫
+    drawAurora();
     // 星星：各自用不同節奏閃
     for (const st of STARS) {
       const a = .25 + .75 * Math.pow(.5 + .5 * Math.sin(ambTime * st.sp + st.ph), 3);
@@ -473,7 +496,7 @@ function ambient(dt) {
   // ---- #front：在雪花前面的東西 ----
   if (front.width !== W || front.height !== H) { front.width = W; front.height = H; }
   fctx.clearRect(0, 0, W, H);
-  if (!on) { snowDepth = 0; return; }
+  if (!on) { snowDepth = 0; frostLevel = 0; groundTop = 0; return; }
   // 地面的霧：兩團很淡的霧慢慢橫向飄
   for (let i = 0; i < 2; i++) {
     const x = ((ambTime * (12 + i * 7) * dpr + i * W * .6) % (W * 1.8)) - W * .4, y = H * (.8 + i * .07);
@@ -485,6 +508,7 @@ function ambient(dt) {
   // 積雪：前 90 秒慢慢堆高，最高到畫面的 5%
   snowDepth = Math.min(1, snowDepth + dt / 90);
   const top = H * (1 - .015 - .035 * snowDepth);
+  groundTop = top;
   const sg = fctx.createLinearGradient(0, top - 10 * dpr, 0, H);
   sg.addColorStop(0, 'rgba(240,245,255,0)'); sg.addColorStop(.25, 'rgba(240,245,255,.92)'); sg.addColorStop(1, 'rgba(225,233,248,1)');
   fctx.fillStyle = sg; fctx.beginPath(); fctx.moveTo(0, H);
@@ -499,6 +523,18 @@ function ambient(dt) {
     fctx.globalAlpha = a; star(x, y, 4 * dpr, 1, fctx); // 借用畫星芒的函式，但畫在 front 上
   }
   fctx.globalAlpha = 1; fctx.globalCompositeOperation = 'source-over';
+  // 陣風：畫面上掠過幾條很淡的風痕
+  if (gust > .05) {
+    fctx.strokeStyle = `rgba(230,238,255,${.07 * gust})`; fctx.lineWidth = 1.2 * dpr; fctx.lineCap = 'round';
+    for (let k = 0; k < 9; k++) {
+      const yy = ((k * 0.137 + ambTime * .05) % 1) * H * .9, xx = ((ambTime * (900 + k * 70) * dpr + k * 397 * dpr) % (W * 2)) - W * .5;
+      const len = (120 + k * 25) * dpr * gust;
+      fctx.beginPath(); fctx.moveTo(xx, yy); fctx.quadraticCurveTo(xx + len * .5, yy - 10 * dpr, xx + len, yy + 4 * dpr); fctx.stroke();
+    }
+  }
+  // 螢幕四角慢慢結霜（2 分鐘結滿）
+  frostLevel = Math.min(1, frostLevel + dt / 120);
+  if (frostTex) { fctx.globalAlpha = frostLevel * .85; fctx.drawImage(frostTex, 0, 0); fctx.globalAlpha = 1; }
   // 前景大雪花：很靠近鏡頭、很大、很糊，偶爾飄過去（景深感）
   for (const b of BOKEH) {
     b.y += b.sp * dt / (H / dpr); b.x += (wind / dpr * 1.6 + 20) * dt / (W / dpr);
@@ -512,6 +548,114 @@ function ambient(dt) {
 }
 
 // =====================================================================
+// 8. 更高級的效果：陣風、手機傾斜視差、窗光照亮雪花、極光、結霜
+// =====================================================================
+let gust = 0, groundTop = 0, frostLevel = 0, frostTex = null;
+// ---- 風：平常是噪聲控制的微風，每 12～22 秒來一陣強風（4.5 秒內增強再減弱）----
+let windT = 0, nextGust = 8, gustT = -1;
+function stepWind(dt) {
+  windT += dt;
+  if (gustT < 0 && windT > nextGust) { gustT = 0; }
+  if (gustT >= 0) {
+    gustT += dt;
+    gust = Math.sin(Math.min(gustT / 4.5, 1) * Math.PI);          // 0 → 1 → 0
+    if (gustT > 4.5) { gustT = -1; gust = 0; nextGust = windT + rand(12, 22); }
+  }
+  wind = (noise(windT * .08, 7.7) * 90 + gust * 260) * dpr;
+  windOffset += wind * dt;
+}
+
+// ---- 視差：手機傾斜（或電腦滑鼠位置）讓各層移動不同距離 ----
+// 越近的圖層移動越多：背景 8px、人物 14px、雪 18px、前景 24px
+const par = { tx: 0, ty: 0, gx: 0, gy: 0, base: null, fx: { x: 0, y: 0 } };
+addEventListener('deviceorientation', e => {
+  if (e.gamma == null) return;
+  if (par.base == null) par.base = e.beta;                          // 第一次讀到的角度當作「正中間」
+  par.gx = Math.max(-1, Math.min(1, e.gamma / 25));
+  par.gy = Math.max(-1, Math.min(1, (e.beta - par.base) / 25));
+});
+addEventListener('mousemove', e => { par.gx = (e.clientX / innerWidth - .5) * 2; par.gy = (e.clientY / innerHeight - .5) * 2; });
+// iPhone 要先問過才能讀傾斜角度（第一次點畫面時問）
+addEventListener('pointerdown', () => {
+  if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission && !par.asked) {
+    par.asked = true; DeviceOrientationEvent.requestPermission().catch(() => {});
+  }
+}, { once: false });
+const parEls = [[bg, 8], [chara, 14], [cv, 18], [glCanvas2(), 18], [document.getElementById('front'), 24]];
+function glCanvas2() { return document.getElementById('gl'); }
+function stepParallax(dt) {
+  const k = 1 - Math.pow(.02, dt);                                  // 平滑跟上，不會抖
+  par.tx += (par.gx - par.tx) * k; par.ty += (par.gy - par.ty) * k;
+  for (const [el, amt] of parEls) el.style.translate = `${(-par.tx * amt).toFixed(2)}px ${(-par.ty * amt).toFixed(2)}px`;
+  par.fx.x = -par.tx * 18; par.fx.y = -par.ty * 18;
+}
+
+// ---- 木屋窗戶在「雪的畫布」上的位置（背景有鏡頭移動和視差，所以每一格重算）----
+const lamp = { x: 0, y: 0, r: 0, on: false };
+function updateLamp() {
+  lamp.on = scene === 'snow' && !bg.dataset.user;
+  if (!lamp.on) return;
+  const m = bgMap(), rect = sky.getBoundingClientRect(), k = rect.width / m.dw;
+  const u = 1200 * CABIN.x - 120 * .17, v = 900 * CABIN.y - 67.5 * .53;   // 窗戶中心（背景圖座標）
+  const sx = rect.left + (m.ox + u * m.s) * k, sy = rect.top + (m.oy + v * m.s) * k;
+  lamp.x = (sx - par.fx.x) * dpr; lamp.y = (sy - par.fx.y) * dpr; lamp.r = 120 * m.s * k * dpr;
+}
+
+// ---- 極光：在 200×70 的小圖上逐點算顏色，再放大貼到夜空（便宜又柔和）----
+const AUR = document.createElement('canvas'); AUR.width = 200; AUR.height = 70;
+const actx = AUR.getContext('2d'), aimg = actx.createImageData(200, 70);
+function drawAurora() {
+  const d = aimg.data, t = ambTime;
+  for (let x = 0; x < 200; x++) {
+    const base = 46 + noise(x * .02, t * .05) * 14 + Math.sin(x * .05 + t * .3) * 3;   // 簾幕下緣的高度，會飄動
+    const bright = Math.max(0, .45 + noise(x * .045 + 10, t * .12) * .9);            // 每一段亮度不同
+    for (let y = 0; y < 70; y++) {
+      const dy = base - y;
+      let a = dy < 0 ? Math.exp(-dy * dy / 6) : Math.exp(-dy / 14);                   // 下緣清楚、往上慢慢淡掉
+      a *= bright;
+      const up = Math.min(1, Math.max(0, dy / 30));                                    // 越上面越偏紫
+      const i = (y * 200 + x) * 4;
+      d[i] = 70 + up * 110; d[i + 1] = 255 - up * 150; d[i + 2] = 170 + up * 70; d[i + 3] = Math.min(255, a * 200);
+    }
+  }
+  actx.putImageData(aimg, 0, 0);
+  sctx.save(); sctx.globalCompositeOperation = 'lighter'; sctx.globalAlpha = .38 + .12 * Math.sin(t * .2);
+  sctx.imageSmoothingEnabled = true; sctx.drawImage(AUR, 0, 30, 1200, 300); sctx.restore();
+}
+
+// ---- 結霜貼圖：從四個角長出樹枝狀的冰紋（換畫面大小時重畫一次）----
+function makeFrost() {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const corners = [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]];
+  for (const [cx, cy, sx, sy] of corners) {
+    const R = Math.min(W, H) * .42;
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, R);
+    gr.addColorStop(0, 'rgba(235,242,255,.45)'); gr.addColorStop(.5, 'rgba(235,242,255,.12)'); gr.addColorStop(1, 'rgba(235,242,255,0)');
+    g.fillStyle = gr; g.fillRect(cx - R, cy - R, R * 2, R * 2);
+    g.strokeStyle = 'rgba(245,250,255,.35)'; g.lineCap = 'round';
+    const branch = (x, y, ang, len, depth) => {
+      if (depth > 4 || len < 4 * dpr) return;
+      let px = x, py = y;
+      const steps = 6;
+      g.lineWidth = Math.max(.6, (5 - depth) * .45) * dpr;
+      g.beginPath(); g.moveTo(px, py);
+      for (let k = 0; k < steps; k++) { ang += rand(-.25, .25); px += Math.cos(ang) * len / steps; py += Math.sin(ang) * len / steps; g.lineTo(px, py); }
+      g.stroke();
+      const n = 2 + Math.floor(Math.random() * 2);
+      for (let k = 0; k < n; k++) {
+        const t = rand(.3, .9);
+        branch(x + (px - x) * t, y + (py - y) * t, ang + (Math.random() < .5 ? -1 : 1) * rand(.5, 1.1), len * rand(.35, .6), depth + 1);
+      }
+    };
+    const baseAng = Math.atan2(sy, sx);
+    for (let k = 0; k < 7; k++) branch(cx, cy, baseAng + rand(-.75, .75), Math.min(W, H) * rand(.12, .28), 0);
+  }
+  frostTex = c;
+}
+addEventListener('resize', () => { if (scene === 'snow') makeFrost(); });
+
+// =====================================================================
 // 4. 主迴圈＋FPS
 // =====================================================================
 const fpsEl = document.getElementById('fps');
@@ -519,6 +663,9 @@ let last = performance.now(), frames = 0, fpsTime = 0;
 function loop(now) {
   const dt = Math.min((now - last) / 1000, 1 / 20);    // 用經過的時間算移動，60Hz 和 120Hz 螢幕速度一樣
   last = now;
+  stepWind(dt);
+  stepParallax(dt);
+  updateLamp();
   if (useGL()) { ctx.clearRect(0, 0, W, H); glRender(dt); } else update(dt);
   ambient(dt);
   frames++; fpsTime += dt;
@@ -539,6 +686,7 @@ function setScene(s) {
   document.body.classList.toggle('snow', s === 'snow');
   if (!bg.dataset.user) bg.style.backgroundImage = `url(${BG[s]})`;
   document.querySelectorAll('[data-scene]').forEach(b => b.setAttribute('aria-pressed', b.dataset.scene === s));
+  if (s === 'snow' && typeof makeFrost === 'function') makeFrost();
   if (typeof setMode === 'function') setMode(mode); else build();
 }
 document.querySelectorAll('[data-scene]').forEach(b => b.onclick = () => setScene(b.dataset.scene));
@@ -582,8 +730,8 @@ const VS = `#version 300 es
 precision highp float;
 in vec2 corner;              // 一個四邊形的角：(0,0) (1,0) (0,1) (1,1)
 in vec4 seed;                // 每片雪：起始 x、起始 y、景深 z、種子
-uniform vec2 res; uniform float time, dpr, windOff, wind; uniform vec3 pointer;
-out vec2 vLocal; out float vR, vL, vAlpha, vSoft, vSpark, vCrystal, vRot, vZ;
+uniform vec2 res; uniform float time, dpr, windOff, wind; uniform vec3 pointer, lamp;
+out vec2 vLocal; out float vR, vL, vAlpha, vSoft, vSpark, vCrystal, vRot, vZ, vWarm;
 void main() {
   float z = pow(seed.z, 1.6);                         // 遠的多、近的少
   float crystal = z > 0.86 ? 1.0 : 0.0;                // 最近的雪畫成六角結晶
@@ -613,12 +761,14 @@ void main() {
   float a = mix(-Rq, L + Rq, corner.y), b = mix(-Rq, Rq, corner.x);
   vec2 pos = head + dir * a + perp * b;
   vLocal = vec2(a, b); vR = r * (z < 0.3 ? 1.5 : 1.0); vL = L; vAlpha = 0.35 + z * 0.65; vSoft = z < 0.3 ? 1.0 : 0.45; vSpark = spark;
+  float ld = length(head - lamp.xy);
+  vWarm = lamp.z > 0.0 ? pow(clamp(1.0 - ld / lamp.z, 0.0, 1.0), 2.0) : 0.0;   // 飄過窗戶的暖光時被照成橘色
   vCrystal = crystal; vRot = seed.w * 6.283 + time * (seed.y - 0.5) * 2.4; vZ = z;
   gl_Position = vec4(pos / res * 2.0 - 1.0, 0.0, 1.0) * vec4(1.0, -1.0, 1.0, 1.0);
 }`;
 const FS = `#version 300 es
 precision mediump float;
-in vec2 vLocal; in float vR, vL, vAlpha, vSoft, vSpark, vCrystal, vRot, vZ;
+in vec2 vLocal; in float vR, vL, vAlpha, vSoft, vSpark, vCrystal, vRot, vZ, vWarm;
 out vec4 color;
 void main() {
   float a = vLocal.x, b = vLocal.y;
@@ -651,6 +801,8 @@ void main() {
   }
   if (alpha < 0.003) discard;
   vec3 tint = mix(vec3(0.78, 0.85, 1.0), vec3(1.0), vZ);   // 遠的雪被月光照得偏藍，近的偏白
+  tint = mix(tint, vec3(1.0, 0.78, 0.5), vWarm * 0.85);
+  alpha = min(1.0, alpha * (1.0 + vWarm * 0.7));
   color = vec4(tint * alpha, alpha);   // 預乘透明度
 }`;
 
@@ -665,7 +817,7 @@ function glInit() {
   gl.linkProgram(glProg);
   if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(glProg));
   gl.useProgram(glProg);
-  ['res', 'time', 'dpr', 'windOff', 'wind', 'pointer'].forEach(n => glU[n] = gl.getUniformLocation(glProg, n));
+  ['res', 'time', 'dpr', 'windOff', 'wind', 'pointer', 'lamp'].forEach(n => glU[n] = gl.getUniformLocation(glProg, n));
   // 共用的四邊形（兩個三角形）
   const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 1,1]), gl.STATIC_DRAW);
@@ -687,15 +839,14 @@ function glBuild() {
 }
 function glRender(dt) {
   glTime += dt;
-  const windNow = noise(glTime * .08, 7.7) * 90 * dpr;
-  windOffset += windNow * dt;
-  wind = windNow;                                       // 讓前景大雪花也跟著同一陣風
+  const windNow = wind;
   if (glCanvas.width !== W || glCanvas.height !== H) { glCanvas.width = W; glCanvas.height = H; }
   gl.viewport(0, 0, W, H);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
   gl.uniform2f(glU.res, W, H); gl.uniform1f(glU.time, glTime); gl.uniform1f(glU.dpr, dpr);
   gl.uniform1f(glU.windOff, windOffset % (W * 1.3)); gl.uniform1f(glU.wind, windNow);
-  gl.uniform3f(glU.pointer, pointer.x, pointer.y, pointer.active ? 1 : 0);
+  gl.uniform3f(glU.pointer, pointer.x - par.fx.x * dpr, pointer.y - par.fx.y * dpr, pointer.active ? 1 : 0);
+  gl.uniform3f(glU.lamp, lamp.x, lamp.y, lamp.on ? lamp.r : 0);
   gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, glCount);
 }
 
