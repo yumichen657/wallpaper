@@ -321,8 +321,8 @@ void main() {
   float m = texture(mask, uv).r * amt;
   // 兩道波疊在一起，相位跟高度有關 → 看起來像從髮根往髮尾傳下去
   float wave = sin(time * 1.6 - uv.y * 7.0) * 0.65 + sin(time * 2.7 - uv.y * 13.0 + 1.3) * 0.35;
-  float a = 0.005 + 0.012 * gust;                      // 陣風來時擺得比較大
-  vec2 off = vec2(wave * a + wind * 0.006, sin(time * 1.1 - uv.y * 5.0) * a * 0.25) * m;
+  float a = 0.015 + 0.02 * gust;                       // 擺動幅度（約畫面上 1～3% 的距離），陣風來時更大
+  vec2 off = vec2(wave * a + wind * 0.01, sin(time * 1.1 - uv.y * 5.0) * a * 0.3) * m;
   color = texture(img, uv - off);
   // 原圖的上緣和左緣是被切掉的直線，淡出才不會看到一條硬邊
   color *= smoothstep(0.0, 0.09, uv.y) * smoothstep(0.0, 0.06, uv.x);
